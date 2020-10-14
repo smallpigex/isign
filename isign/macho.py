@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Constructs to represent various structures
 # in a Mach-O binary.
@@ -127,7 +126,7 @@ LoadCommand = Struct("LoadCommand",
                           LC_VERSION_MIN_TVOS=0x2f,
                           LC_VERSION_MIN_WATCHOS=0x30,
                           LC_NOTE=0x31,
-                          LC_BUILD_VERSION=0x32,
+                          LC_BUILD_VERSION=0x32
                           ),
 
                      UInt32("cmdsize"),

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # This is a Construct library which represents an
 # LC_CODE_SIGNATURE structure. Like all Construct
@@ -9,6 +8,33 @@
 
 from construct import *
 import plistlib
+import logging
+
+from pyasn1.codec.der.decoder import decode
+from pyasn1.codec.der.encoder import encode
+import ents
+
+SHA1_HASHTYPE = 1
+SHA256_HASHTYPE = 2
+
+log = logging.getLogger(__name__)
+'''
+FOR NOW we do not use an adapter; instead, will handle localy
+'''
+
+
+class Asn1Adapter(Adapter):
+    def _encode(self, obj, context):
+        return encode(obj)
+
+    def _decode(self, obj, context):
+        #    log.info('Decoding obj %s : %s', type(obj), obj)
+        ent, rest = decode(obj, ents.Ents())
+        #    log.info('Decoded asn %s', type(ent))
+        # traceback.print_stack(file=sys.stdout)
+        #  for field in ent:
+        #     log.info('Key %s value %s', field['key'], field['val'])
+        return ent
 
 
 class PlistAdapter(Adapter):
@@ -16,7 +42,13 @@ class PlistAdapter(Adapter):
         return plistlib.writePlistToString(obj)
 
     def _decode(self, obj, context):
-        return plistlib.readPlistFromString(obj)
+        obj = plistlib.readPlistFromString(obj)
+        #    log.info('Decoded xml %s', type(obj))
+        #  traceback.print_stack(file=sys.stdout)
+        #  for key in obj.keys():
+        #      log.info('Key %s value %s', key, obj[key])
+        return obj
+
 
 # talk about overdesign.
 # magic is in the blob struct
@@ -38,14 +70,22 @@ CodeDirectory = Struct("CodeDirectory",
                        UBInt32("codeLimit"),
                        UBInt8("hashSize"),
                        UBInt8("hashType"),
-                       UBInt8("spare1"),
+                       UBInt8("platform"),
                        UBInt8("pageSize"),
                        UBInt32("spare2"),
+                       UBInt32("scatterOffset"),
+                       UBInt32("teamIDOffset"),
                        Pointer(lambda ctx: ctx['cd_start'] - 8 + ctx['identOffset'], CString('ident')),
-                       If(lambda ctx: ctx['version'] >= 0x20100, UBInt32("scatterOffset")),
-                       If(lambda ctx: ctx['version'] >= 0x20200, UBInt32("teamIDOffset")),
-                       If(lambda ctx: ctx['version'] >= 0x20200, Pointer(lambda ctx: ctx['cd_start'] - 8 + ctx['teamIDOffset'], CString('teamID'))),
-                       Pointer(lambda ctx: ctx['cd_start'] - 8 + ctx['hashOffset'] - ctx['hashSize'] * ctx['nSpecialSlots'], Hashes)
+
+                       If(lambda ctx: ctx['version'] >= 0x20300, UBInt32("spare3")),
+                       If(lambda ctx: ctx['version'] >= 0x20300, UBInt64("codeLimit64")),
+                       If(lambda ctx: ctx['version'] >= 0x20400, UBInt64("execSegBase")),
+                       If(lambda ctx: ctx['version'] >= 0x20400, UBInt64("execSegLimit")),
+                       If(lambda ctx: ctx['version'] >= 0x20400, UBInt64("execSegFlags")),
+                       Pointer(lambda ctx: ctx['cd_start'] - 8 + ctx['teamIDOffset'], CString('teamID')),
+                       Pointer(
+                           lambda ctx: ctx['cd_start'] - 8 + ctx['hashOffset'] - ctx['hashSize'] * ctx['nSpecialSlots'],
+                           Hashes)
                        )
 
 Data = Struct("Data",
@@ -125,6 +165,11 @@ Entitlement = Struct("Entitlement",
                      PlistAdapter(Bytes("data", lambda ctx: ctx['_']['length'] - 8)),
                      )
 
+EntitlementBinary = Struct("EntitlementBinary",
+                           # actually a DER encoded entitlement
+                           Asn1Adapter(Bytes("data", lambda ctx: ctx['_']['length'] - 8)),
+                           )
+
 EntitlementsBlobIndex = Struct("BlobIndex",
                                Enum(UBInt32("type"),
                                     kSecHostRequirementType=1,
@@ -140,6 +185,7 @@ Entitlements = Struct("Entitlements",  # actually a kind of super blob
                       Anchor("sb_start"),
                       UBInt32("count"),
                       Array(lambda ctx: ctx['count'], EntitlementsBlobIndex),
+                      #	Probe(),
                       )
 
 BlobWrapper = Struct("BlobWrapper",
@@ -150,12 +196,14 @@ BlobIndex = Struct("BlobIndex",
                    UBInt32("type"),
                    UBInt32("offset"),
                    If(lambda ctx: ctx['offset'], Pointer(lambda ctx: ctx['_']['sb_start'] - 8 + ctx['offset'], Blob)),
+                   #	Probe(),
                    )
 
 SuperBlob = Struct("SuperBlob",
                    Anchor("sb_start"),
                    UBInt32("count"),
                    Array(lambda ctx: ctx['count'], BlobIndex),
+                   #  Probe(),
                    )
 
 Blob_ = Struct("Blob",
@@ -163,12 +211,14 @@ Blob_ = Struct("Blob",
                     CSMAGIC_REQUIREMENT=0xfade0c00,
                     CSMAGIC_REQUIREMENTS=0xfade0c01,
                     CSMAGIC_CODEDIRECTORY=0xfade0c02,
-                    CSMAGIC_ENTITLEMENT=0xfade7171,  # actually, this is kSecCodeMagicEntitlement, and not defined in the C version
-                    CSMAGIC_BLOBWRAPPER=0xfade0b01,  # and this isn't even defined in libsecurity_codesigning; it's in _utilities
+                    CSMAGIC_ENTITLEMENT=0xfade7171,
+                    # actually, this is kSecCodeMagicEntitlement, and not defined in the C version
+                    CSMAGIC_ENTITLEMENT_BINARY=0xfade7172,
+                    CSMAGIC_BLOBWRAPPER=0xfade0b01,
+                    # and this isn't even defined in libsecurity_codesigning; it's in _utilities
                     CSMAGIC_EMBEDDED_SIGNATURE=0xfade0cc0,
                     CSMAGIC_DETACHED_SIGNATURE=0xfade0cc1,
                     CSMAGIC_CODE_SIGN_DRS=0xfade0c05,
-                    _default_=Pass,
                     ),
                UBInt32("length"),
                Peek(Switch("data", lambda ctx: ctx['magic'],
@@ -176,6 +226,7 @@ Blob_ = Struct("Blob",
                             'CSMAGIC_REQUIREMENTS': Entitlements,
                             'CSMAGIC_CODEDIRECTORY': CodeDirectory,
                             'CSMAGIC_ENTITLEMENT': Entitlement,
+                            'CSMAGIC_ENTITLEMENT_BINARY': EntitlementBinary,
                             'CSMAGIC_BLOBWRAPPER': BlobWrapper,
                             'CSMAGIC_EMBEDDED_SIGNATURE': SuperBlob,
                             'CSMAGIC_DETACHED_SIGNATURE': SuperBlob,

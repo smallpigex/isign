@@ -202,10 +202,11 @@ class Codesig(object):
     def set_codedirectories(self, seal_path, info_path, signer):
         cd = self.get_blobs('CSMAGIC_CODEDIRECTORY', min_expected=1, max_expected=2)
         changed_bundle_id = self.signable.get_changed_bundle_id()
+        hash_size_sha_mapping = {32: 'sha256', 20: 'sha1'}
 
         for i, code_directory in enumerate(cd):
             # TODO: Is there a better way to figure out which hashing algorithm we should use?
-            hash_algorithm = 'sha256' if i > 0 else 'sha1'
+            hash_algorithm = hash_size_sha_mapping.get(code_directory.data.hashSize)
 
             if self.has_codedirectory_slot(EntitlementsSlot, code_directory):
                 self.fill_codedirectory_slot(EntitlementsSlot(self), code_directory, hash_algorithm)
